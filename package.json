@@ -1,0 +1,22 @@
+{
+  "name": "prowlarr-torznab-bridge",
+  "version": "2.7.1",
+  "description": "Torznab proxy bridging Prowlarr to Elementum with tiered resolution filter",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "prowlarr",
+    "torznab",
+    "elementum",
+    "kodi",
+    "jackett",
+    "stremioarrs"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}
