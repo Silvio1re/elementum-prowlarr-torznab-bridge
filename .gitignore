@@ -1,0 +1,34 @@
+1. Na glavnoj stranici repoa klikni **Add file** → **Create new file**
+2. **File name:** `.gitignore`
+3. Zalijepi:
+
+```gitignore
+# Env i tajne
+.env
+.env.local
+*.key
+*.secret
+
+# Backups
+*.bak
+*.bak-*
+index.js.bak-*
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logovi
+*.log
+logs/
