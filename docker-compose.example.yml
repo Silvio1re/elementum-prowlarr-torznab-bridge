@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  prowlarr-torznab-bridge:
+    image: ghcr.io/Silvio1re/prowlarr-torznab-bridge:latest
+    # ili build lokalno:
+    # build: .
+    container_name: prowlarr-torznab-bridge
+    ports:
+      - "9117:9117"
+    environment:
+      # Obavezno
+      - PROWLARR_URL=http://prowlarr:9696
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
+      - FAKE_API_KEY=${FAKE_API_KEY}
+
+      # Opcionalno
+      - STREMIOARR_URL=http://stremioarrs:5100
+      - RESOLUTION_PRIORITY=4k,1080p,720p
+      - RESOLUTION_MIN_SEEDERS=5,3,1
+      - MAX_SIZE_4K_GB=25
+      - RESERVED_LOWER_SLOTS_PCT=50
+      - MAX_RESULTS=30
+      - MAX_RESULTS_TV=30
+      - MIN_SEEDERS=1
+      - DEBUG=0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9117/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
