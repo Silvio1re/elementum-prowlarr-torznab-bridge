@@ -1,178 +1,94 @@
-Arhitektura
-Dijagram toka
-text
+# Prowlarr Torznab Bridge
 
-┌─────────┐    ┌──────────┐    ┌─────────────┐    ┌──────────┐
-│  Kodi   │───▶│ Elementum│───▶│  Torznab    │───▶│ Prowlarr │
-│  (UI)   │    │ (daemon) │    │  Bridge     │    │          │
-└─────────┘    └──────────┘    │  (v2.7.1)   │    └──────────┘
-                               │             │
-                               │  Tiered     │    ┌──────────┐
-                               │  filter     │───▶│StremioArrs│
-                               │             │    └──────────┘
-                               └─────────────┘
+A Torznab proxy that connects **Elementum** (Kodi) to **Prowlarr** and adds an advanced **tiered resolution filter** (4K → 1080p → 720p) with size and seeder control.
 
-Komponente
-1. Kodi (klijent)
+## Why?
 
-    Prikazuje Elementum UI
+**There is no native Elementum ↔ Prowlarr integration.** Elementum communicates with torrent indexers exclusively through the `script.elementum.jackett` addon, which supports **only the Jackett (Torznab) protocol**. Prowlarr *is* Torznab-compatible, but direct connection isn't possible because:
 
-    Šalje zahtjeve Elementum daemonu
+- The Elementum Jackett addon has its **own filters** (resolution, seeders, size) that run before the request ever reaches Prowlarr
+- There is **no way** to say "give me max 15× 4K and 15× 1080p"
+- There is **no size filter** for 4K — a 60 GB remux passes through untouched
+- There is **no resolution priority** — it sorts by seeders, so a 4K with 10 seeders can end up below a 1080p with 100 seeders
+- There is **no fallback logic** — if 4K doesn't have enough, it doesn't fill in with 1080p/720p
 
-2. Elementum daemon
+This bridge solves that — it sits **between** Elementum and Prowlarr and does the tiered filtering for you. **As far as we know, this is the first publicly available implementation of such a bridge.**
 
-    Prima zahtjeve od Koda
+## Architecture
 
-    Upravlja torrentima (add, play, pause, delete)
+**Key point:** the bridge **replaces** Jackett in Elementum's chain. Instead of Elementum calling Jackett (which then calls Prowlarr), Elementum calls **our bridge**, which then calls Prowlarr.
 
-    Pita Torznab Bridge za rezultate pretrage
+## Features
 
-    Streama torrent Kodi playeru
+- ✅ **Tiered filter**: 4K → 1080p → 720p with per-tier min seeders
+- ✅ **4K cap + reserved slots**: e.g., 15× 4K + 15× 1080p (instead of 30× 4K)
+- ✅ **Max 4K size**: filters out remuxes >25 GB
+- ✅ **Multi-source**: Prowlarr + StremioArrs
+- ✅ **Magnet resolution**: automatically converts .torrent redirects to magnets
+- ✅ **TV episode filter**: strict SxxExx matching
+- ✅ **Health endpoint**: `/health` for monitoring
+- ✅ **Env-configurable**: everything without a rebuild
 
-3. Torznab Bridge (ovaj projekt)
+## Connecting to Elementum (important!)
 
-    Prima Torznab API zahtjeve od Elementuma
+This bridge **replaces** Jackett in Elementum's chain. The setup has 4 steps.
 
-    Pretvara ih u Prowlarr search
+### 1. Turn off all filters in `script.elementum.jackett`
 
-    Opcionalno spaja s StremioArrs
+**Kodi → Add-ons → Program add-ons → Elementum Jackett → Configure:**
 
-    Primjenjuje filtere:
+| Setting | Set to | Why |
+|---|---|---|
+| **Filter by Resolution** | ❌ **OFF** | The bridge does tiered filtering |
+| **Filter by Seeders** | ❌ **OFF** | The bridge does per-tier min seeders |
+| **Filter by Size** | ❌ **OFF** | The bridge does max size for 4K |
+| **Filter by Quality** | ❌ **OFF** | The bridge excludes cam/ts/480p |
+| **Sort by** | anything | The bridge sorts by resolution |
 
-        Global min seeders
+**Why is this critical?** If the Jackett addon filters before the request reaches the bridge, the bridge doesn't see all candidates and **cannot correctly fill the reserved slots**. Result: you get fewer than 30 results or the wrong resolution mix.
 
-        Exclude bad resolution (cam, ts, 480p)
+### 2. Add the bridge as an indexer in Elementum
 
-        TV episode filter (SxxExx)
+**Kodi → Add-ons → Program add-ons → Elementum Jackett → Configure → Indexers:**
 
-        Tiered filter (4K → 1080p → 720p)
+1. Click **Add indexer** → select **Custom / Torznab** (or **Jackett** if Custom isn't available)
+2. **URL**: `http://<docker-host>:9117/api`
+   - Locally: `http://192.168.2.119:9117/api`
+   - Over Tailscale: `http://prowlarr-proxy-ts:9117/api`
+3. **API key**: **any 32-character string**
+   - Example: `00000000000000000000000000000000` (32 zeros)
+   - Or: `abcdef1234567890abcdef1234567890`
+   - **Must match** `FAKE_API_KEY` in the bridge config (see step 3)
+4. **Categories**: leave empty (the bridge forwards everything)
+5. Click **Save** and **restart Kodi**
 
-        Limit na MAX_RESULTS
+### 3. Set `FAKE_API_KEY` in the bridge
 
-    Prefetch magnet resolution
+In the bridge service's `docker-compose.yml`:
 
-    Vraća Torznab XML Elementumu
+```yaml
+environment:
+  - FAKE_API_KEY=00000000000000000000000000000000  # same as in Elementum
+What is FAKE_API_KEY? It is not the real Prowlarr API key. It's the key the bridge uses to verify that the request is coming from your Elementum. It can be any string, but it must be identical in two places:
 
-4. Prowlarr
+    In script.elementum.jackett (step 2, "API key" field)
 
-    Agregira N indexera (1337x, RARBG, YTS, itd.)
+    In the bridge (step 3, FAKE_API_KEY env)
 
-    Vraća JSON s torrent rezultatima
+    ⚠️ Security note: If the bridge is exposed only on your local network or over Tailscale, the key is mostly a formality. If it's exposed to the internet, use a random 32-char string (e.g., generate with openssl rand -hex 16).
 
-5. StremioArrs (opcionalno)
+4. Restart Elementum
 
-    Dodatni izvor rezultata
+After you change the indexer in script.elementum.jackett:
 
-    Vraća Torznab XML
+    Shut down and start Kodi (safest), or
 
-Tiered filter — detaljno
-Ulaz
+    Restart the Elementum addon
 
-Lista releasea iz Prowlarr/StremioArrs (može biti 50-200 rezultata).
-Faza 1 — Razvrstavanje po tieru
+The new indexer should be visible in search. Verify:
 
-Za svaki tier (4k, 1080p, 720p):
+    Search for MobLand S02E04 → you should see 15× 4K + 15× 1080p
 
-    Filtriraj po regexu (2160p/4k/uhd, 1080p, 720p)
+    Search for Breaking Bad S01E01 → you should see a mix (less 4K, more 1080p)
 
-    Filtriraj po min seederima
-
-    Filtriraj po max veličini (samo 4K tier)
-
-    Sortiraj po seederima (desc)
-
-Rezultat: 3 bucketa, svaki sortiran po seederima.
-Faza 2 — Dodjela slotova
-text
-
-reservedSlots = floor(maxResults × RESERVED_LOWER_SLOTS_PCT / 100)
-maxTopSlots = maxResults - reservedSlots
-
-# 4K dobiva do maxTopSlots
-used[0] = min(4K_bucket.length, maxTopSlots)
-
-# Niži tieri pune reservedSlots
-lowerUsed = 0
-for i in 1..n:
-  canAdd = min(bucket[i].length, reservedSlots - lowerUsed)
-  used[i] = canAdd
-  lowerUsed += canAdd
-
-Faza 3 — Spillover
-
-Ako niži tieri nisu popunili sve reservedSlots, 4K dobiva preostale slotove.
-Faza 4 — Složi rezultat
-
-Redom: 4K → 1080p → 720p, svaki tier do used[i] mjesta.
-Primjer (MobLand S02E04, MAX=30, PCT=50)
-Tier	Kandidata	Reserved	Dodano
-4K	51	—	15 (cap)
-1080p	30	15	15
-720p	5	15	0 (1080p popunio)
-Ukupno			30
-Magnet resolution
-
-Prowlarr vraća .torrent fajlove ili redirect URL-ove, ne magnete. Bridge:
-
-    Prima downloadUrl od Prowlarr
-
-    Slijedi redirect chain (max 8 hopova)
-
-    Ako naiđe na magnet: → vraća magnet
-
-    Ako naiđe na .torrent fajl → kešira buffer
-
-    Ako naiđe na eksterni redirect (npr. na 1337x.to) → vraća 302 Elementumu
-
-Prefetch
-
-Prije slanja XML-a, bridge prefetcha magnete za sve iteme koji nemaju infoHash ni magnetUrl (max 30s timeout). To ubrzava prvi klik u Elementumu (magnet je već pripremljen).
-Filter pipeline — redoslijed
-
-Svaki zahtjev prolazi kroz sljedeće faze:
-
-    Prowlarr + StremioArrs → paralelno (Promise.all)
-
-    Merge → spoji rezultate
-
-    Dedupe → po infohash/magnet/guid/title
-
-    Global min seeders → filter po MIN_SEEDERS
-
-    Bad resolution → exclude cam, ts, 480p, itd.
-
-    TV episode filter → SxxExx strict matching (samo za tvsearch)
-
-    Tiered filter → 4K cap + reserved lower slots + spillover
-
-    Prefetch → magnet resolution za iteme bez infohasha
-
-    XML output → Torznab RSS
-
-Error handling
-
-    Prowlarr padne → vraća praznu listu (StremioArrs može spasiti)
-
-    StremioArrs padne → nastavlja s Prowlarr rezultatima
-
-    Oba padnu → prazna lista (200 OK, ne 5xx)
-
-    Magnet resolution fail → item ostaje s proxy_download linkom
-
-Performanse
-
-    Prowlarr timeout: 30s
-
-    StremioArrs timeout: 20s
-
-    Prefetch timeout: 30s
-
-    Magnet cache: in-memory Map (perzistira dok container radi)
-
-    Batch size za prefetch: 5 paralelno
-
-Vidi također
-
-    configuration.md — sve env varijable
-
-    troubleshooting.md — poznati problemi
+If you see 30 results with the correct resolution mix → the bridge is working properly.
