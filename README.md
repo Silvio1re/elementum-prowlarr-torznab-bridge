@@ -1,37 +1,43 @@
 # Prowlarr Torznab Bridge
 
-Torznab proxy koji spaja **Prowlarr** s **Elementum** (Kodi) i dodaje napredni **tiered filter rezolucija** (4K → 1080p → 720p) s kontrolom veličine i broja seedera.
+A Torznab proxy that connects **Elementum** (Kodi) to **Prowlarr** and adds an advanced **tiered resolution filter** (4K → 1080p → 720p) with size and seeder control.
 
-## Zašto?
+## Why?
 
-Elementum native Jackett integracija ne podržava:
-- Prioritet rezolucija (4K prvo, pa 1080p, pa 720p)
-- Limit veličine po rezoluciji (npr. max 25 GB za 4K)
-- Rezervaciju slotova za niže rezolucije
+**There is no native Elementum ↔ Prowlarr integration.** Elementum communicates with torrent indexers exclusively through the `script.elementum.jackett` addon, which supports **only the Jackett (Torznab) protocol**. Prowlarr *is* Torznab-compatible, but direct connection isn't possible because:
 
-Ovaj bridge to rješava.
+- The Elementum Jackett addon has its **own filters** (resolution, seeders, size) that run before the request ever reaches Prowlarr
+- There is **no way** to say "give me max 15× 4K and 15× 1080p"
+- There is **no size filter** for 4K — a 60 GB remux passes through untouched
+- There is **no resolution priority** — it sorts by seeders, so a 4K with 10 seeders can end up below a 1080p with 100 seeders
+- There is **no fallback logic** — if 4K doesn't have enough, it doesn't fill in with 1080p/720p
 
-## Značajke
+This bridge solves that — it sits **between** Elementum and Prowlarr and does the tiered filtering for you. **As far as we know, this is the first publicly available implementation of such a bridge.**
 
-- ✅ **Tiered filter**: 4K → 1080p → 720p s min-seederima po tieru
-- ✅ **4K cap + reserved slots**: npr. 15× 4K + 15× 1080p (umjesto 30× 4K)
-- ✅ **Max veličina 4K**: filtrira remuxove >25 GB
-- ✅ **Multi-source**: Prowlarr + StremioArrs
-- ✅ **Magnet resolution**: automatski pretvara .torrent redirect u magnet
-- ✅ **TV episode filter**: SxxExx strict matching
-- ✅ **Health endpoint**: `/health` za monitoring
+---
 
-## Brzi start
+## ⚠️ Before you start — disable existing filters in `script.elementum.jackett`
 
-```yaml
-# docker-compose.yml
-services:
-  prowlarr-torznab-bridge:
-    image: ghcr.io/Silvio1re/prowlarr-torznab-bridge:latest
-    ports:
-      - "9117:9117"
-    environment:
-      - PROWLARR_URL=http://prowlarr:9696
-      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
-      - FAKE_API_KEY=change_me
-    restart: unless-stopped
+**This is the most important step. If you skip it, the bridge will not work correctly.**
+
+The `script.elementum.jackett` addon has its **own filter settings** that run **before** the request ever reaches our bridge. If those filters are active, the bridge never sees the full set of candidates and **cannot correctly fill the reserved slots** — you'll get fewer than 30 results or the wrong resolution mix.
+
+**You must turn off ALL of these filters in `script.elementum.jackett`:**
+
+**Kodi → Add-ons → Program add-ons → Elementum Jackett → Configure:**
+
+| Setting | Set to | Why |
+|---|---|---|
+| **Filter by Resolution** | ❌ **OFF** | The bridge does tiered filtering |
+| **Filter by Seeders** | ❌ **OFF** | The bridge does per-tier min seeders |
+| **Filter by Size** | ❌ **OFF** | The bridge does max size for 4K |
+| **Filter by Quality** | ❌ **OFF** | The bridge excludes cam/ts/480p |
+| **Sort by** | anything | The bridge sorts by resolution |
+
+After changing these settings, **save and restart Kodi** before proceeding to the next step.
+
+> 💡 **Rule of thumb:** the bridge should be the **only** thing doing filtering. Let `script.elementum.jackett` pass everything through untouched, and let the bridge decide what makes the final list.
+
+---
+
+## Architecture
